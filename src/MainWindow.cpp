@@ -57,9 +57,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_uploadBtn = new QPushButton("Upload Photo", this);
     m_uploadBtn->setEnabled(false); // Erst nach Login aktiv
 
+    m_progressBar = new QProgressBar(this);
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setValue(0);
+    m_progressBar->setTextVisible(true);
+    // Optional: Standardmäßig ausblenden oder auf 0 lassen
+    // m_progressBar->setVisible(false);
+
     uploadLayout->addLayout(fileLayout);
     uploadLayout->addLayout(pathLayout);
     uploadLayout->addWidget(m_uploadBtn);
+    uploadLayout->addWidget(m_progressBar);
 
     mainLayout->addWidget(uploadGroup);
 
@@ -160,10 +168,15 @@ void MainWindow::onUploadClicked() {
     }
 
     log("Uploading file...");
-    QNetworkReply* reply = m_netManager->post(request, multiPart);
-    
+    // ProgressBar zurücksetzen
+    m_progressBar->setValue(0);
+
+    QNetworkReply *reply = m_netManager->post(request, multiPart);
+
     // MultiPart muss gelöscht werden, wenn der Reply fertig ist
-    multiPart->setParent(reply); 
+    multiPart->setParent(reply);
+
+    connect(reply, &QNetworkReply::uploadProgress, this, &MainWindow::onUploadProgress);
 }
 
 // --- Netzwerk Antwort Handler ---
@@ -176,6 +189,11 @@ void MainWindow::onNetworkFinished(QNetworkReply* reply) {
         // Server Fehler lesen (z.B. 401 Body)
         log("Server Response: " + reply->readAll());
         return;
+    }
+
+    // Bei Erfolg auf 100% setzen (für visuelles Feedback)
+    if (reply->request().url().path() == "/upload") {
+        m_progressBar->setValue(100);
     }
 
     QByteArray responseData = reply->readAll();
@@ -199,5 +217,18 @@ void MainWindow::onNetworkFinished(QNetworkReply* reply) {
     else if (path == "/upload") {
         log("Upload finished successfully!");
         QMessageBox::information(this, "Success", "Upload erfolgreich!\n" + responseData);
+    }
+}
+
+void MainWindow::onUploadProgress(qint64 bytesSent, qint64 bytesTotal)
+{
+    // bytesTotal kann -1 sein, wenn die Größe unbekannt ist
+    if (bytesTotal > 0) {
+        int percent = static_cast<int>((bytesSent * 100) / bytesTotal);
+        m_progressBar->setValue(percent);
+
+        // Optional: Log update nur alle 10% um Spam zu vermeiden,
+        // oder einfach Statusbar updaten
+        // m_statusLabel->setText(QString("Upload: %1%").arg(percent));
     }
 }
