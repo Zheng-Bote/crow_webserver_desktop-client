@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QApplication>
+#include <QDesktopServices>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -7,7 +9,11 @@
 #include <QNetworkReply>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QTextEdit>
+#include <QUrl>
+
+#include "includes/rz_config.hpp"
 
 class MainWindow : public QMainWindow
 {
@@ -23,8 +29,19 @@ private slots:
     void onUploadClicked();
     void onNetworkFinished(QNetworkReply *reply);
     void onUploadProgress(qint64 bytesSent, qint64 bytesTotal);
+    void openGithub();
 
 private:
+    QSettings *settings;
+    QString SERVER_URL = "http://localhost:8080";
+    QPushButton *m_statusMiddle;
+    QMenu *appMenu;
+    QAction *configAct;
+    QAction *aboutAct;
+    void createMenu();
+    void appConfig();
+    void appAbout();
+
     // GUI Elements
     QLineEdit *m_userEdit;
     QLineEdit *m_passEdit;
@@ -42,8 +59,13 @@ private:
 
     // Networking
     QNetworkAccessManager *m_netManager;
-    QString m_jwtToken; // Hier speichern wir den Token
+    QString m_jwtToken;
+    QString m_refreshToken;
+    bool m_isRefreshing = false;
+
+    void performTokenRefresh();
 
     // Helper
     void log(const QString &msg);
+    void retryLastUpload();
 };

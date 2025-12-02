@@ -1,17 +1,20 @@
 #include "MainWindow.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include <QFile>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
-#include <QFileDialog>
+#include <QHBoxLayout>
 #include <QHttpMultiPart>
-#include <QFile>
+#include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMenuBar>
 #include <QMessageBox>
+#include <QStatusBar>
+#include <QVBoxLayout>
 
 // Konfiguration (Anpassen falls Server woanders läuft)
-const QString SERVER_URL = "http://localhost:8080";
+//const QString SERVER_URL = "http://localhost:8080";
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     QWidget* centralWidget = new QWidget(this);
@@ -19,7 +22,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     QVBoxLayout* mainLayout = new QVBoxLayout(centralWidget);
 
     // --- 1. Login Sektion ---
-    QGroupBox* loginGroup = new QGroupBox("1. Authentifizierung", this);
+    QGroupBox *loginGroup = new QGroupBox(tr("1. Authentification"), this);
     QFormLayout* loginLayout = new QFormLayout(loginGroup);
     
     m_userEdit = new QLineEdit("admin", this);
@@ -40,7 +43,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // Datei Auswahl
     QHBoxLayout* fileLayout = new QHBoxLayout();
     m_filePathEdit = new QLineEdit(this);
-    m_filePathEdit->setPlaceholderText("Bitte Datei auswählen...");
+    m_filePathEdit->setPlaceholderText(tr("Please choose an image file..."));
     m_filePathEdit->setReadOnly(true);
     m_browseBtn = new QPushButton("Browse...", this);
     fileLayout->addWidget(m_filePathEdit);
@@ -48,9 +51,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // Server Pfad
     QHBoxLayout* pathLayout = new QHBoxLayout();
-    QLabel* pathLabel = new QLabel("Zielordner (Server):", this);
+    QLabel *pathLabel = new QLabel(tr("Target folder (Server):"), this);
     m_serverPathEdit = new QLineEdit(this);
-    m_serverPathEdit->setPlaceholderText("z.B. urlaub/2024 (optional)");
+    m_serverPathEdit->setPlaceholderText(tr("e.g. holidays/2025 (optional)"));
+    m_serverPathEdit->setToolTip(tr("e.g. holidays/2025 (optional)"));
     pathLayout->addWidget(pathLabel);
     pathLayout->addWidget(m_serverPathEdit);
 
@@ -88,13 +92,45 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_netManager, &QNetworkAccessManager::finished, this, &MainWindow::onNetworkFinished);
 
     setWindowTitle("Crow Server Client");
+
+    QString version = "v";
+    version.append(PROJECT_VERSION.c_str());
+    m_statusMiddle = new QPushButton(version, this);
+    m_statusMiddle->setStyleSheet("font-size: 10px;"
+                                  "border: none;");
+    m_statusMiddle->setToolTip(
+        tr("click to open your default Browser and go to the Github repository"));
+    statusBar()->addWidget(m_statusMiddle, 1);
+    connect(m_statusMiddle, SIGNAL(clicked(bool)), this, SLOT(openGithub()));
+
     resize(400, 500);
+
+    settings = new QSettings;
+    SERVER_URL = settings->contains("Server") ? settings->value("Server").toString() : SERVER_URL;
+
+    createMenu();
 }
 
 MainWindow::~MainWindow() {}
 
 void MainWindow::log(const QString& msg) {
     m_logArea->append(msg);
+}
+
+void MainWindow::retryLastUpload()
+{
+    log("Retrying upload with new token...");
+
+    // Sicherheitscheck: Ist überhaupt noch ein Pfad ausgewählt?
+    if (m_filePathEdit->text().isEmpty()) {
+        log("Retry failed: No file selected anymore.");
+        return;
+    }
+
+    // Wir rufen einfach die existierende Upload-Logik erneut auf.
+    // Diese baut den MultiPart-Request neu zusammen (inkl. neuem Token)
+    // und sendet ihn ab.
+    onUploadClicked();
 }
 
 // --- Logik: Login ---
@@ -115,10 +151,22 @@ void MainWindow::onLoginClicked() {
 
 // --- Logik: Datei wählen ---
 void MainWindow::onBrowseClicked() {
-    QString fileName = QFileDialog::getOpenFileName(this, "Bild auswählen", "", "Images (*.png *.jpg *.jpeg *.bmp)");
+    QString imagePath = settings->contains("imagePath") ? settings->value("imagePath").toString()
+                                                        : QDir::homePath();
+
+    QString fileName
+        = QFileDialog::getOpenFileName(this,
+                                       tr("choose Image"),
+                                       imagePath,
+                                       "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.gif)");
     if (!fileName.isEmpty()) {
         m_filePathEdit->setText(fileName);
+
+        QFileInfo fileInfo(fileName);
+        m_serverPathEdit->setText(fileInfo.absolutePath());
+        settings->setValue("imagePath", fileInfo.absolutePath());
     }
+    m_progressBar->setValue(0);
 }
 
 // --- Logik: Upload ---
@@ -180,43 +228,94 @@ void MainWindow::onUploadClicked() {
 }
 
 // --- Netzwerk Antwort Handler ---
-void MainWindow::onNetworkFinished(QNetworkReply* reply) {
-    // Reply automatisch löschen später
+void MainWindow::onNetworkFinished(QNetworkReply *reply)
+{
+    // 1. Meta-Daten holen (URL und HTTP Status Code)
+    QString path = reply->request().url().path();
+    int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+    // ------------------------------------------------------------------
+    // FALL 1: Token abgelaufen (401) bei normalen Aktionen (z.B. Upload)
+    // ------------------------------------------------------------------
+    if (statusCode == 401 && path != "/login" && path != "/refresh") {
+        reply->deleteLater(); // Antwort verwerfen
+
+        if (!m_refreshToken.isEmpty()) {
+            log("Access Token expired (401). Trying Refresh...");
+            performTokenRefresh();
+        } else {
+            log("Session expired. Please login again.");
+            m_uploadBtn->setEnabled(false);
+            m_progressBar->setValue(0);
+        }
+        return; // Wir brechen hier ab, wir lesen keine Daten
+    }
+
+    // ------------------------------------------------------------------
+    // Alle anderen Fälle: Wir lesen die Antwortdaten
+    // ------------------------------------------------------------------
+    QByteArray responseData = reply->readAll(); // <--- HIER wird responseData definiert
     reply->deleteLater();
 
-    if (reply->error() != QNetworkReply::NoError) {
-        log("Network Error: " + reply->errorString());
-        // Server Fehler lesen (z.B. 401 Body)
-        log("Server Response: " + reply->readAll());
+    // ------------------------------------------------------------------
+    // FALL 2: Refresh Token Antwort (/refresh)
+    // ------------------------------------------------------------------
+    if (path == "/refresh") {
+        m_isRefreshing = false; // Flag zurücksetzen
+
+        if (statusCode == 200) {
+            QJsonDocument doc = QJsonDocument::fromJson(responseData);
+            if (doc.isObject() && doc.object().contains("token")) {
+                m_jwtToken = doc.object()["token"].toString();
+                log("Token refreshed successfully. Retrying last action...");
+
+                // Aktion wiederholen (Hier hardcoded auf Upload,
+                // in komplexen Apps würde man das Request-Objekt speichern)
+                //onUploadClicked();
+                retryLastUpload();
+            }
+        } else {
+            log("Refresh failed (Session invalid). Please login again.");
+            m_jwtToken.clear();
+            m_refreshToken.clear();
+            m_uploadBtn->setEnabled(false);
+        }
         return;
     }
 
-    // Bei Erfolg auf 100% setzen (für visuelles Feedback)
-    if (reply->request().url().path() == "/upload") {
-        m_progressBar->setValue(100);
+    // ------------------------------------------------------------------
+    // FALL 3: Allgemeine Netzwerkfehler (außer 401, das haben wir oben behandelt)
+    // ------------------------------------------------------------------
+    if (reply->error() != QNetworkReply::NoError) {
+        m_progressBar->setValue(0);
+        log("Network Error: " + reply->errorString());
+        log("Server Message: " + responseData); // Hier nutzen wir responseData
+        return;
     }
 
-    QByteArray responseData = reply->readAll();
-    log("Response: " + responseData);
-
-    // Wir schauen, welche URL aufgerufen wurde, um zu wissen was zu tun ist
-    QString path = reply->request().url().path();
-
+    // ------------------------------------------------------------------
+    // FALL 4: Normale Erfolgsfälle (/login, /upload)
+    // ------------------------------------------------------------------
     if (path == "/login") {
-        // Login Parsing
         QJsonDocument doc = QJsonDocument::fromJson(responseData);
-        if (doc.isObject() && doc.object().contains("token")) {
-            m_jwtToken = doc.object()["token"].toString();
-            log("Login Success! Token received.");
-            m_uploadBtn->setEnabled(true);
-            m_statusLabel = new QLabel("Logged In as " + m_userEdit->text());
-        } else {
-            log("Login Failed: Invalid JSON response.");
+        if (doc.isObject()) {
+            QJsonObject obj = doc.object();
+            if (obj.contains("token") && obj.contains("refreshToken")) {
+                m_jwtToken = obj["token"].toString();
+                m_refreshToken = obj["refreshToken"].toString();
+
+                log("Login Success! Tokens received.");
+                m_uploadBtn->setEnabled(true);
+                // Status Label update etc.
+            } else {
+                log("Login failed: Invalid JSON response.");
+            }
         }
-    } 
-    else if (path == "/upload") {
+    } else if (path == "/upload") {
+        m_progressBar->setValue(100);
         log("Upload finished successfully!");
-        QMessageBox::information(this, "Success", "Upload erfolgreich!\n" + responseData);
+        // Optional: responseData anzeigen
+        // log("Server: " + responseData);
     }
 }
 
@@ -231,4 +330,97 @@ void MainWindow::onUploadProgress(qint64 bytesSent, qint64 bytesTotal)
         // oder einfach Statusbar updaten
         // m_statusLabel->setText(QString("Upload: %1%").arg(percent));
     }
+}
+
+void MainWindow::openGithub()
+{
+    QDesktopServices::openUrl(QUrl(PROJECT_HOMEPAGE_URL.c_str()));
+}
+
+void MainWindow::createMenu()
+{
+    menuBar()->setNativeMenuBar(false);
+#ifdef Q_OS_MACOS
+    menuBar()->setLayoutDirection(Qt::LayoutDirection::RightToLeft);
+#endif
+
+    aboutAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::HelpAbout), tr("&About"), this);
+    aboutAct->setShortcuts(QKeySequence::WhatsThis);
+    connect(aboutAct, &QAction::triggered, this, &MainWindow::appAbout);
+
+    configAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentProperties),
+                            tr("&Config"),
+                            this);
+    connect(configAct, &QAction::triggered, this, &MainWindow::appConfig);
+
+    appMenu = menuBar()->addMenu(tr("&System"));
+    appMenu->addAction(aboutAct);
+    appMenu->addAction(configAct);
+}
+
+void MainWindow::appConfig()
+{
+    bool ok;
+
+    QString text = QInputDialog::getText(this,
+                                         tr("Server URL"),
+                                         tr("Please enter the new Server URL"),
+                                         QLineEdit::Normal,
+                                         SERVER_URL,
+                                         &ok);
+    if (ok && !text.isEmpty()) {
+        settings->setValue("Server", text);
+        SERVER_URL = text;
+    }
+}
+
+void MainWindow::appAbout()
+{
+    QString text = "<p><b>";
+    text.append(PROG_LONGNAME.c_str());
+    text.append("</b></p>");
+
+    QString setInformativeText = "<p>";
+    setInformativeText.append(PROJECT_NAME.c_str());
+    setInformativeText.append(" v");
+    setInformativeText.append(PROJECT_VERSION);
+    setInformativeText.append("</p><p>");
+    setInformativeText.append(PROJECT_DESCRIPTION);
+    setInformativeText.append("</p><p>Copyright (&copy;) ");
+    setInformativeText.append(PROG_CREATED);
+    setInformativeText.append(" " + PROG_AUTHOR);
+    setInformativeText.append("</p><p><a href=\"");
+    setInformativeText.append(PROJECT_HOMEPAGE_URL);
+    setInformativeText.append("\" alt=\"Github Repository\">Github Repository</a></p>");
+
+    QString cmake_info = "<p>Compiled with:<br/>";
+    cmake_info.append(CMAKE_CXX_COMPILER + " " + CMAKE_CXX_STANDARD + " QT " + CMAKE_QT_VERSION
+                      + "</p>");
+    setInformativeText.append(cmake_info);
+
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle(tr("About"));
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.setTextFormat(Qt::RichText);
+    msgBox.setText(text);
+    msgBox.setInformativeText(setInformativeText);
+    //msgBox.setFixedWidth(900);
+    msgBox.exec();
+}
+
+void MainWindow::performTokenRefresh()
+{
+    if (m_isRefreshing)
+        return;
+    m_isRefreshing = true;
+
+    QUrl url(SERVER_URL + "/refresh");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject json;
+    json["refreshToken"] = m_refreshToken;
+
+    log("Token expired. Attempting refresh...");
+    m_netManager->post(request, QJsonDocument(json).toJson());
 }
