@@ -28,12 +28,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_userEdit = new QLineEdit("admin", this);
     m_passEdit = new QLineEdit("1234", this); // Standard Passwort aus dem Server-Code
     m_passEdit->setEchoMode(QLineEdit::Password);
+
     m_loginBtn = new QPushButton("Login", this);
-    
+    m_logoutBtn = new QPushButton("Logout", this);
+    m_logoutBtn->setEnabled(false);
+
     loginLayout->addRow("Username:", m_userEdit);
     loginLayout->addRow("Password:", m_passEdit);
-    loginLayout->addRow("", m_loginBtn);
-    
+
+    //loginLayout->addRow("", m_loginBtn);
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    btnLayout->addWidget(m_loginBtn);
+    btnLayout->addWidget(m_logoutBtn);
+    loginLayout->addRow("", btnLayout);
+
     mainLayout->addWidget(loginGroup);
 
     // --- 2. Upload Sektion ---
@@ -85,6 +93,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     
     // --- Signals & Slots ---
     connect(m_loginBtn, &QPushButton::clicked, this, &MainWindow::onLoginClicked);
+    connect(m_logoutBtn, &QPushButton::clicked, this, &MainWindow::onLogoutClicked);
     connect(m_browseBtn, &QPushButton::clicked, this, &MainWindow::onBrowseClicked);
     connect(m_uploadBtn, &QPushButton::clicked, this, &MainWindow::onUploadClicked);
     
@@ -133,6 +142,23 @@ void MainWindow::retryLastUpload()
     onUploadClicked();
 }
 
+void MainWindow::resetUI()
+{
+    // 1. Tokens löschen
+    m_jwtToken.clear();
+    m_refreshToken.clear();
+
+    // 2. GUI Elemente zurücksetzen
+    m_uploadBtn->setEnabled(false);
+    m_logoutBtn->setEnabled(false);
+    m_loginBtn->setEnabled(true); // Login wieder erlauben
+    m_userEdit->setEnabled(true);
+    m_passEdit->setEnabled(true);
+    m_progressBar->setValue(0);
+
+    log("Logged out locally.");
+}
+
 // --- Logik: Login ---
 void MainWindow::onLoginClicked() {
     QUrl url(SERVER_URL + "/login");
@@ -147,6 +173,31 @@ void MainWindow::onLoginClicked() {
 
     log("Logging in...");
     m_netManager->post(request, doc.toJson());
+}
+
+void MainWindow::onLogoutClicked()
+{
+    // Wenn wir gar nicht eingeloggt sind, nichts tun
+    if (m_refreshToken.isEmpty()) {
+        resetUI();
+        return;
+    }
+
+    log("Logging out...");
+
+    // Request an Server senden, um Refresh Token zu invalidieren
+    QUrl url(SERVER_URL + "/logout");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject json;
+    json["refreshToken"] = m_refreshToken;
+
+    m_netManager->post(request, QJsonDocument(json).toJson());
+
+    // WICHTIG: Wir resetten die UI sofort, egal was der Server sagt.
+    // Der Server-Call ist "Fire and Forget" aus User-Sicht.
+    resetUI();
 }
 
 // --- Logik: Datei wählen ---
@@ -223,6 +274,10 @@ void MainWindow::onUploadClicked() {
 
     // MultiPart muss gelöscht werden, wenn der Reply fertig ist
     multiPart->setParent(reply);
+
+    // bei refresh token ist der input weg
+    //m_filePathEdit->clear();
+    //m_serverPathEdit->clear();
 
     connect(reply, &QNetworkReply::uploadProgress, this, &MainWindow::onUploadProgress);
 }
@@ -306,6 +361,10 @@ void MainWindow::onNetworkFinished(QNetworkReply *reply)
 
                 log("Login Success! Tokens received.");
                 m_uploadBtn->setEnabled(true);
+                m_logoutBtn->setEnabled(true);
+                m_loginBtn->setEnabled(false);
+                m_userEdit->setEnabled(false);
+                m_passEdit->setEnabled(false);
                 // Status Label update etc.
             } else {
                 log("Login failed: Invalid JSON response.");
@@ -316,6 +375,8 @@ void MainWindow::onNetworkFinished(QNetworkReply *reply)
         log("Upload finished successfully!");
         // Optional: responseData anzeigen
         // log("Server: " + responseData);
+    } else if (path == "/logout") {
+        log("Server confirmed logout.");
     }
 }
 

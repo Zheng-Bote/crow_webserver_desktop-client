@@ -19,9 +19,9 @@ static const std::string PROJECT_DESCRIPTION = "Upload images to Webserver";
 
 static const std::string PROJECT_EXECUTABLE = "CrowQtClient";
 
-static const std::string PROJECT_VERSION = "0.2.0";
+static const std::string PROJECT_VERSION = "0.3.0";
 static const std::int32_t PROJECT_VERSION_MAJOR{0};
-static const std::int32_t PROJECT_VERSION_MINOR{2};
+static const std::int32_t PROJECT_VERSION_MINOR{3};
 static const std::int32_t PROJECT_VERSION_PATCH{0};
 
 static const std::string PROJECT_HOMEPAGE_URL = "https://github.com/Zheng-Bote/crow_webserver_desktop-client";

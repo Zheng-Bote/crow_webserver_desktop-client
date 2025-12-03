@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.23)
 project(
   CrowQtClient
-  VERSION 0.2.0
+  VERSION 0.3.0
   DESCRIPTION "Upload images to Webserver"
   HOMEPAGE_URL "https://github.com/Zheng-Bote/crow_webserver_desktop-client"
   LANGUAGES CXX)

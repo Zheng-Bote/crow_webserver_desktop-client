@@ -25,10 +25,13 @@ public:
 
 private slots:
     void onLoginClicked();
+    void onLogoutClicked();
+
     void onBrowseClicked();
     void onUploadClicked();
     void onNetworkFinished(QNetworkReply *reply);
     void onUploadProgress(qint64 bytesSent, qint64 bytesTotal);
+
     void openGithub();
 
 private:
@@ -45,7 +48,9 @@ private:
     // GUI Elements
     QLineEdit *m_userEdit;
     QLineEdit *m_passEdit;
+
     QPushButton *m_loginBtn;
+    QPushButton *m_logoutBtn;
 
     QLineEdit *m_filePathEdit;
     QLineEdit *m_serverPathEdit;
@@ -68,4 +73,5 @@ private:
     // Helper
     void log(const QString &msg);
     void retryLastUpload();
+    void resetUI();
 };
